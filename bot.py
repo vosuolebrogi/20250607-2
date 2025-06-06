@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 import openai
-from health_server import run_health_server
+from health_server import start_health_server
 
 # Load environment variables
 load_dotenv()
@@ -166,9 +166,14 @@ class LocationFactBot:
         """Run the bot"""
         logger.info("Starting Location Facts Bot...")
         
-        # Start health server for Railway
-        run_health_server(port=int(os.getenv('PORT', 8000)))
+        # Start health server for Railway in background
+        port = int(os.getenv('PORT', 8000))
+        health_task = asyncio.create_task(start_health_server(port))
         
+        # Give health server time to start
+        await asyncio.sleep(2)
+        
+        # Start bot polling
         await self.application.run_polling(drop_pending_updates=True)
 
 def main():
