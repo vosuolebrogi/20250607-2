@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-Telegram bot that provides interesting facts about places near user's location.
+Simplified Telegram bot without health server to avoid event loop conflicts
 """
 
 import os
 import logging
-import asyncio
 from typing import Optional
 from telegram import Update, Location
 from telegram.ext import (
@@ -40,7 +39,7 @@ if not OPENAI_API_KEY:
 # Initialize OpenAI
 openai.api_key = OPENAI_API_KEY
 
-class LocationFactBot:
+class SimpleLocationFactBot:
     def __init__(self):
         self.application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
         self.setup_handlers()
@@ -163,51 +162,14 @@ class LocationFactBot:
     
     def run(self):
         """Run the bot"""
-        logger.info("Starting Location Facts Bot...")
-        
-        # Start health server for Railway in background
-        port = int(os.getenv('PORT', 8000))
-        
-        # Use threading for health server to avoid event loop conflicts
-        import threading
-        health_thread = threading.Thread(
-            target=self._run_health_server, 
-            args=(port,), 
-            daemon=True
-        )
-        health_thread.start()
-        
-        # Start bot polling (this manages its own event loop)
+        logger.info("Starting Simple Location Facts Bot...")
+        logger.info("No health server - running bot only")
         self.application.run_polling(drop_pending_updates=True)
-    
-    def _run_health_server(self, port):
-        """Run health server in separate thread"""
-        import asyncio
-        from aiohttp import web
-        
-        async def health_check(request):
-            return web.json_response({
-                'status': 'healthy',
-                'service': 'location-facts-bot'
-            })
-        
-        async def root(request):
-            return web.json_response({
-                'service': 'Location Facts Telegram Bot',
-                'status': 'running'
-            })
-        
-        app = web.Application()
-        app.router.add_get('/health', health_check)
-        app.router.add_get('/', root)
-        
-        logger.info(f"Health server starting on port {port}")
-        web.run_app(app, host='0.0.0.0', port=port)
 
 def main():
     """Main function"""
     try:
-        bot = LocationFactBot()
+        bot = SimpleLocationFactBot()
         bot.run()
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")

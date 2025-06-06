@@ -14,5 +14,5 @@ COPY . .
 # Expose port for Railway
 EXPOSE $PORT
 
-# Run the bot
-CMD ["python", "bot.py"] 
+# Run the simplified bot (no event loop conflicts)
+CMD ["python", "bot_simple.py"] 
