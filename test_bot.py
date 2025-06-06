@@ -1,58 +1,87 @@
 #!/usr/bin/env python3
 """
-Simple test script for the Location Facts Bot
+Test script for the Location Facts Telegram Bot.
+Tests basic functionality without running the full bot.
 """
 
 import asyncio
 import os
 from dotenv import load_dotenv
-from bot import LocationFactBot
+
+from logger_config import setup_logging, log_user_interaction, log_openai_request
+from main import get_place_fact
 
 # Load environment variables
 load_dotenv()
 
-async def test_openai_integration():
-    """Test OpenAI integration with sample coordinates"""
-    print("🧪 Testing OpenAI integration...")
-    
-    try:
-        bot = LocationFactBot()
-        
-        # Test with Moscow coordinates
-        moscow_lat, moscow_lon = 55.7558, 37.6176
-        fact = await bot.get_location_fact(moscow_lat, moscow_lon)
-        
-        if fact:
-            print(f"✅ OpenAI integration works!")
-            print(f"📍 Sample fact for Moscow: {fact[:100]}...")
-        else:
-            print("❌ OpenAI integration failed - no fact returned")
-            
-    except Exception as e:
-        print(f"❌ OpenAI integration error: {e}")
+# Setup logging
+logger = setup_logging("DEBUG")
 
-def test_environment_variables():
-    """Test if required environment variables are set"""
-    print("🧪 Testing environment variables...")
+
+async def test_environment_variables():
+    """Test if all required environment variables are set."""
+    print("🔧 Testing environment variables...")
     
     telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
     openai_key = os.getenv('OPENAI_API_KEY')
     
     if telegram_token:
-        print("✅ TELEGRAM_BOT_TOKEN is set")
+        print(f"✅ TELEGRAM_BOT_TOKEN: {'*' * (len(telegram_token) - 8)}{telegram_token[-8:]}")
     else:
-        print("❌ TELEGRAM_BOT_TOKEN is not set")
-    
+        print("❌ TELEGRAM_BOT_TOKEN: Not set")
+        
     if openai_key:
-        print("✅ OPENAI_API_KEY is set")
+        print(f"✅ OPENAI_API_KEY: {'*' * (len(openai_key) - 8)}{openai_key[-8:]}")
     else:
-        print("❌ OPENAI_API_KEY is not set")
-    
-    return bool(telegram_token and openai_key)
+        print("❌ OPENAI_API_KEY: Not set")
+        
+    return telegram_token and openai_key
 
-def test_imports():
-    """Test if all required packages can be imported"""
-    print("🧪 Testing package imports...")
+
+async def test_logging():
+    """Test logging functionality."""
+    print("\n📝 Testing logging system...")
+    
+    try:
+        # Test different log functions
+        log_user_interaction(12345, "test_user", "test_action", "Test interaction")
+        log_openai_request(55.7558, 37.6176, True)  # Moscow coordinates
+        log_openai_request(40.7128, -74.0060, False, "Test error")  # NYC coordinates
+        
+        print("✅ Logging system working correctly")
+        return True
+    except Exception as e:
+        print(f"❌ Logging system error: {e}")
+        return False
+
+
+async def test_openai_integration():
+    """Test OpenAI API integration with sample coordinates."""
+    print("\n🤖 Testing OpenAI integration...")
+    
+    # Test coordinates (Red Square, Moscow)
+    test_latitude = 55.7539
+    test_longitude = 37.6208
+    
+    try:
+        fact = await get_place_fact(test_latitude, test_longitude)
+        
+        if fact:
+            print("✅ OpenAI integration working correctly")
+            print(f"📍 Sample fact: {fact[:100]}..." if len(fact) > 100 else f"📍 Sample fact: {fact}")
+            return True
+        else:
+            print("❌ OpenAI integration failed: No fact returned")
+            return False
+            
+    except Exception as e:
+        print(f"❌ OpenAI integration error: {e}")
+        return False
+
+
+async def test_imports():
+    """Test if all required packages can be imported."""
+    print("\n📦 Testing package imports...")
     
     try:
         import telegram
@@ -60,49 +89,67 @@ def test_imports():
     except ImportError as e:
         print(f"❌ python-telegram-bot import failed: {e}")
         return False
-    
+        
     try:
         import openai
         print("✅ openai imported successfully")
     except ImportError as e:
         print(f"❌ openai import failed: {e}")
         return False
-    
+        
     try:
-        import aiohttp
-        print("✅ aiohttp imported successfully")
+        from dotenv import load_dotenv
+        print("✅ python-dotenv imported successfully")
     except ImportError as e:
-        print(f"❌ aiohttp import failed: {e}")
+        print(f"❌ python-dotenv import failed: {e}")
         return False
-    
+        
     return True
 
+
 async def main():
-    """Run all tests"""
-    print("🚀 Starting Location Facts Bot Tests\n")
+    """Run all tests."""
+    print("🧪 Starting Location Facts Bot Tests\n")
     
-    # Test imports
-    if not test_imports():
-        print("\n❌ Package import tests failed. Run: pip install -r requirements.txt")
-        return
+    tests = [
+        ("Package Imports", test_imports),
+        ("Environment Variables", test_environment_variables),
+        ("Logging System", test_logging),
+        ("OpenAI Integration", test_openai_integration),
+    ]
     
-    print()
+    results = []
     
-    # Test environment variables
-    if not test_environment_variables():
-        print("\n❌ Environment variable tests failed. Create .env file with required tokens.")
-        return
+    for test_name, test_func in tests:
+        try:
+            result = await test_func()
+            results.append((test_name, result))
+        except Exception as e:
+            print(f"❌ {test_name} failed with exception: {e}")
+            results.append((test_name, False))
     
-    print()
+    print("\n" + "="*50)
+    print("📊 Test Results Summary:")
+    print("="*50)
     
-    # Test OpenAI integration
-    await test_openai_integration()
+    passed = 0
+    total = len(results)
     
-    print("\n🎉 All tests completed!")
-    print("\n📋 Next steps:")
-    print("1. Make sure your .env file contains valid tokens")
-    print("2. Run the bot: python bot.py")
-    print("3. Test in Telegram by sending /start to your bot")
+    for test_name, result in results:
+        status = "✅ PASSED" if result else "❌ FAILED"
+        print(f"{test_name}: {status}")
+        if result:
+            passed += 1
+    
+    print(f"\nOverall: {passed}/{total} tests passed")
+    
+    if passed == total:
+        print("🎉 All tests passed! Bot is ready to deploy.")
+    else:
+        print("⚠️  Some tests failed. Please check the configuration.")
+        
+    return passed == total
+
 
 if __name__ == "__main__":
     asyncio.run(main()) 

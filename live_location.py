@@ -1,136 +1,282 @@
-#!/usr/bin/env python3
 """
-Live location functionality for version 1.1
+Live location handler for the Telegram bot.
+Handles live location updates and periodic fact generation.
 """
 
 import asyncio
-import logging
 from datetime import datetime, timedelta
-from typing import Dict, Set
+from typing import Dict, Optional
+from dataclasses import dataclass
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
-logger = logging.getLogger(__name__)
+from logger_config import log_user_interaction, log_bot_error
+from main import get_place_fact
+
+
+@dataclass
+class LiveLocationSession:
+    """Data class to store live location session information."""
+    user_id: int
+    username: str
+    chat_id: int
+    last_update: datetime
+    last_latitude: float
+    last_longitude: float
+    message_count: int = 0
+    is_active: bool = True
+
 
 class LiveLocationManager:
-    """Manages live location updates and periodic fact generation"""
+    """Manages live location sessions and periodic updates."""
     
-    def __init__(self, bot_instance):
-        self.bot = bot_instance
-        self.active_users: Dict[int, dict] = {}  # user_id -> location data
-        self.update_interval = 600  # 10 minutes in seconds
-        self.running = False
+    def __init__(self):
+        self.active_sessions: Dict[int, LiveLocationSession] = {}
+        self.update_interval = timedelta(minutes=10)
+        self.min_distance_threshold = 0.001  # ~100 meters in degrees
         
-    def start_live_location_tracking(self, user_id: int, chat_id: int, location: dict):
-        """Start tracking live location for a user"""
-        self.active_users[user_id] = {
-            'chat_id': chat_id,
-            'location': location,
-            'last_update': datetime.now(),
-            'last_fact_time': datetime.now()
-        }
+    def start_session(
+        self, 
+        user_id: int, 
+        username: str, 
+        chat_id: int, 
+        latitude: float, 
+        longitude: float
+    ) -> None:
+        """Start a new live location session."""
+        session = LiveLocationSession(
+            user_id=user_id,
+            username=username,
+            chat_id=chat_id,
+            last_update=datetime.now(),
+            last_latitude=latitude,
+            last_longitude=longitude
+        )
         
-        logger.info(f"Started live location tracking for user {user_id}")
-        
-        # Start the update loop if not already running
-        if not self.running:
-            asyncio.create_task(self.update_loop())
+        self.active_sessions[user_id] = session
+        log_user_interaction(
+            user_id, 
+            username, 
+            "live_location_started", 
+            f"Started at {latitude:.6f}, {longitude:.6f}"
+        )
     
-    def stop_live_location_tracking(self, user_id: int):
-        """Stop tracking live location for a user"""
-        if user_id in self.active_users:
-            del self.active_users[user_id]
-            logger.info(f"Stopped live location tracking for user {user_id}")
-    
-    def update_location(self, user_id: int, location: dict):
-        """Update location for an active user"""
-        if user_id in self.active_users:
-            self.active_users[user_id]['location'] = location
-            self.active_users[user_id]['last_update'] = datetime.now()
-            logger.info(f"Updated location for user {user_id}")
-    
-    async def update_loop(self):
-        """Main update loop for sending periodic facts"""
-        self.running = True
+    def update_location(
+        self, 
+        user_id: int, 
+        latitude: float, 
+        longitude: float
+    ) -> tuple[bool, bool]:
+        """
+        Update location for an active session.
         
-        while self.active_users:
-            try:
-                current_time = datetime.now()
-                
-                for user_id, data in list(self.active_users.items()):
-                    chat_id = data['chat_id']
-                    location = data['location']
-                    last_fact_time = data['last_fact_time']
-                    
-                    # Check if it's time to send a new fact (10 minutes)
-                    if current_time - last_fact_time >= timedelta(seconds=self.update_interval):
-                        try:
-                            # Get new fact for current location
-                            fact = await self.bot.get_location_fact(
-                                location['latitude'], 
-                                location['longitude']
-                            )
-                            
-                            if fact:
-                                message = f"🔄 Обновление локации:\n\n🌟 {fact}"
-                                await self.bot.application.bot.send_message(
-                                    chat_id=chat_id,
-                                    text=message
-                                )
-                                
-                                # Update last fact time
-                                self.active_users[user_id]['last_fact_time'] = current_time
-                                logger.info(f"Sent periodic fact to user {user_id}")
-                            
-                        except Exception as e:
-                            logger.error(f"Error sending periodic fact to user {user_id}: {e}")
-                
-                # Sleep for 1 minute before next check
-                await asyncio.sleep(60)
-                
-            except Exception as e:
-                logger.error(f"Error in live location update loop: {e}")
-                await asyncio.sleep(60)
+        Returns:
+            tuple: (should_send_fact, location_changed_significantly)
+        """
+        if user_id not in self.active_sessions:
+            return False, False
+            
+        session = self.active_sessions[user_id]
+        now = datetime.now()
         
-        self.running = False
-        logger.info("Live location update loop stopped")
+        # Calculate distance moved
+        lat_diff = abs(latitude - session.last_latitude)
+        lon_diff = abs(longitude - session.last_longitude)
+        distance_moved = (lat_diff ** 2 + lon_diff ** 2) ** 0.5
+        
+        # Check if enough time has passed
+        time_passed = now - session.last_update >= self.update_interval
+        
+        # Check if user moved significantly
+        moved_significantly = distance_moved >= self.min_distance_threshold
+        
+        should_send_fact = time_passed and moved_significantly
+        
+        if should_send_fact:
+            session.last_update = now
+            session.last_latitude = latitude
+            session.last_longitude = longitude
+            session.message_count += 1
+            
+            log_user_interaction(
+                user_id,
+                session.username,
+                "live_location_update",
+                f"Update #{session.message_count} at {latitude:.6f}, {longitude:.6f}"
+            )
+        
+        return should_send_fact, moved_significantly
+    
+    def stop_session(self, user_id: int) -> bool:
+        """Stop a live location session."""
+        if user_id in self.active_sessions:
+            session = self.active_sessions[user_id]
+            session.is_active = False
+            
+            log_user_interaction(
+                user_id,
+                session.username,
+                "live_location_stopped",
+                f"Session ended after {session.message_count} updates"
+            )
+            
+            del self.active_sessions[user_id]
+            return True
+        return False
+    
+    def get_session(self, user_id: int) -> Optional[LiveLocationSession]:
+        """Get active session for a user."""
+        return self.active_sessions.get(user_id)
+    
+    def get_active_sessions_count(self) -> int:
+        """Get number of active live location sessions."""
+        return len(self.active_sessions)
+    
+    def cleanup_inactive_sessions(self, max_age_hours: int = 24) -> int:
+        """Clean up sessions older than max_age_hours."""
+        now = datetime.now()
+        max_age = timedelta(hours=max_age_hours)
+        
+        inactive_sessions = [
+            user_id for user_id, session in self.active_sessions.items()
+            if now - session.last_update > max_age
+        ]
+        
+        for user_id in inactive_sessions:
+            self.stop_session(user_id)
+            
+        return len(inactive_sessions)
 
-# Enhanced handlers for live location
-async def handle_live_location_start(update: Update, context: ContextTypes.DEFAULT_TYPE, live_manager: LiveLocationManager):
-    """Handle start of live location sharing"""
-    location_data = {
-        'latitude': update.message.location.latitude,
-        'longitude': update.message.location.longitude
-    }
-    
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    
-    live_manager.start_live_location_tracking(user_id, chat_id, location_data)
-    
-    message = (
-        "🔄 Начато отслеживание живой локации!\n\n"
-        "Я буду отправлять вам новые интересные факты каждые 10 минут, "
-        "пока вы делитесь своим местоположением.\n\n"
-        "Чтобы остановить, отправьте команду /stop_live"
-    )
-    
-    await update.message.reply_text(message)
 
-async def handle_live_location_update(update: Update, context: ContextTypes.DEFAULT_TYPE, live_manager: LiveLocationManager):
-    """Handle live location updates"""
-    location_data = {
-        'latitude': update.message.location.latitude,
-        'longitude': update.message.location.longitude
-    }
-    
-    user_id = update.effective_user.id
-    live_manager.update_location(user_id, location_data)
+# Global live location manager instance
+live_location_manager = LiveLocationManager()
 
-async def handle_stop_live_location(update: Update, context: ContextTypes.DEFAULT_TYPE, live_manager: LiveLocationManager):
-    """Handle stop live location command"""
-    user_id = update.effective_user.id
-    live_manager.stop_live_location_tracking(user_id)
+
+async def handle_live_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle live location updates from users."""
+    user = update.effective_user
+    location = update.message.location
     
-    message = "✅ Отслеживание живой локации остановлено."
-    await update.message.reply_text(message) 
+    if not location:
+        return
+    
+    try:
+        # Check if this is a new live location session
+        session = live_location_manager.get_session(user.id)
+        
+        if not session:
+            # Start new session
+            live_location_manager.start_session(
+                user.id,
+                user.username,
+                update.effective_chat.id,
+                location.latitude,
+                location.longitude
+            )
+            
+            # Send initial fact
+            processing_message = await update.message.reply_text(
+                "🔄 Отслеживаю вашу живую локацию! "
+                "Буду присылать новые факты каждые 10 минут при движении..."
+            )
+            
+            fact = await get_place_fact(location.latitude, location.longitude)
+            
+            if fact:
+                await processing_message.edit_text(f"📍 {fact}")
+            else:
+                await processing_message.edit_text(
+                    "😔 Не удалось найти интересную информацию о вашем местоположении."
+                )
+        else:
+            # Update existing session
+            should_send_fact, moved_significantly = live_location_manager.update_location(
+                user.id,
+                location.latitude,
+                location.longitude
+            )
+            
+            if should_send_fact:
+                # Send new fact for new location
+                processing_message = await update.message.reply_text(
+                    "🔍 Вы переместились! Ищу новый факт о вашем местоположении..."
+                )
+                
+                fact = await get_place_fact(location.latitude, location.longitude)
+                
+                if fact:
+                    await processing_message.edit_text(f"📍 {fact}")
+                else:
+                    await processing_message.edit_text(
+                        "😔 Не удалось найти новую информацию для этого местоположения."
+                    )
+            elif moved_significantly:
+                # User moved but not enough time passed
+                await update.message.reply_text(
+                    "⏰ Получу новый факт через несколько минут, когда пройдёт достаточно времени."
+                )
+                
+    except Exception as e:
+        log_bot_error(e, "handle_live_location")
+        await update.message.reply_text(
+            "❌ Произошла ошибка при обработке живой локации."
+        )
+
+
+async def stop_live_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Stop live location tracking for the user."""
+    user = update.effective_user
+    
+    if live_location_manager.stop_session(user.id):
+        await update.message.reply_text(
+            "⏹️ Отслеживание живой локации остановлено. "
+            "Спасибо за использование бота!"
+        )
+    else:
+        await update.message.reply_text(
+            "ℹ️ У вас нет активной сессии отслеживания живой локации."
+        )
+
+
+async def get_live_location_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Get status of live location tracking."""
+    user = update.effective_user
+    session = live_location_manager.get_session(user.id)
+    
+    if session:
+        time_since_last = datetime.now() - session.last_update
+        minutes_since = int(time_since_last.total_seconds() / 60)
+        
+        status_text = (
+            f"📊 Статус живой локации:\n\n"
+            f"✅ Активна\n"
+            f"📍 Последнее обновление: {minutes_since} мин. назад\n"
+            f"🔢 Всего обновлений: {session.message_count}\n"
+            f"⏱️ Следующий факт: через {max(0, 10 - minutes_since)} мин.\n\n"
+            f"Используйте /stop_live для остановки отслеживания."
+        )
+    else:
+        status_text = (
+            "ℹ️ Живая локация не активна.\n\n"
+            "Отправьте живую локацию для начала отслеживания."
+        )
+    
+    await update.message.reply_text(status_text)
+
+
+# Cleanup task to remove old sessions
+async def cleanup_task():
+    """Periodic cleanup of inactive sessions."""
+    while True:
+        try:
+            cleaned = live_location_manager.cleanup_inactive_sessions()
+            if cleaned > 0:
+                print(f"Cleaned up {cleaned} inactive live location sessions")
+            
+            # Sleep for 1 hour
+            await asyncio.sleep(3600)
+            
+        except Exception as e:
+            log_bot_error(e, "cleanup_task")
+            await asyncio.sleep(3600)  # Continue after error 
